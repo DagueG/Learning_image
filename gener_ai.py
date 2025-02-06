@@ -31,11 +31,13 @@ root.geometry("800x750")
 class_names = []
 last_image_path = None  
 last_probabilities = None  
+translator = Translator()
 
 # 🔹 Sauvegarder et charger les classes
 def save_class_names():
     with open(CLASS_NAMES_PATH, "w") as f:
         json.dump(class_names, f)
+
 
 def load_class_names():
     global class_names
@@ -52,6 +54,7 @@ def load_downloaded_images():
             return set(json.load(f))
     return set()
 
+
 # 🔹 Sauvegarder les nouvelles images téléchargées
 def save_downloaded_images(urls):
     existing_urls = load_downloaded_images()
@@ -59,32 +62,32 @@ def save_downloaded_images(urls):
     with open(DOWNLOADED_IMAGES_PATH, "w") as f:
         json.dump(list(updated_urls), f)
 
-translator = Translator()
 
-# 🔹 Traduire automatiquement les noms de classes en anglais avec confirmation unique
+# 🔹 Traduire automatiquement les noms de classes en anglais avec confirmation si nécessaire
 def translate_to_english(label):
     try:
-        # Traduction automatique
         translation = translator.translate(label, dest='en')
         translated_text = translation.text.lower().strip()
 
-        # 🔹 Demander confirmation à l'utilisateur
+        # 🔹 Si la traduction est identique, exécuter sans confirmation
+        if translated_text == label.lower().strip():
+            return translated_text
+
+        # 🔹 Sinon, demander confirmation à l'utilisateur
         confirm = messagebox.askyesno("Confirmation de la traduction", 
             f"Le mot '{label}' a été traduit en '{translated_text}'. Voulez-vous l'utiliser ?")
 
         if confirm:
             return translated_text
         else:
-            # Si l'utilisateur refuse la traduction, il entre le nom correct
+            # L'utilisateur entre manuellement le mot correct
             corrected_text = simpledialog.askstring("Correction", "Entrez le mot correct :")
-            if corrected_text:
-                return corrected_text.lower().strip()
-            else:
-                return label.lower().strip()  # Utiliser le mot original si aucune correction n'est entrée
+            return corrected_text.lower().strip() if corrected_text else label.lower().strip()
 
     except Exception as e:
         print(f"Erreur de traduction : {e}")
-        return label.lower().strip()  # En cas d'erreur, retourner le label original
+        return label.lower().strip()
+
 
 # 🔹 Ajouter l'image mal reconnue avec correction des variantes linguistiques
 def correct_recognition():
@@ -92,14 +95,6 @@ def correct_recognition():
         correct_label = simpledialog.askstring("Correction", "Quel est le bon objet ?")
         if correct_label:
             translated_label = translate_to_english(correct_label)
-            similar_class = find_similar_class(translated_label)
-            
-            if similar_class:
-                response = messagebox.askyesno("Classe similaire détectée", 
-                    f"Une classe similaire '{similar_class}' existe déjà.\nVoulez-vous l'utiliser à la place ?")
-                if response:
-                    translated_label = similar_class  # Utiliser la classe existante
-            
             threading.Thread(target=process_correction, args=(translated_label,)).start()
 
     def process_correction(correct_label):
@@ -119,12 +114,8 @@ def correct_recognition():
         download_images(correct_label, num_images=100)
         train_image_model()
 
-    def find_similar_class(new_label):
-        # Chercher une correspondance exacte avec les noms de classes existants
-        for existing_class in class_names:
-            if existing_class == new_label:
-                return existing_class
-        return None
+    root.after(0, ask_correct_label)
+
 
 # 🔹 Télécharger 100 nouvelles images sans doublons avec affichage du progrès (multithreaded)
 def download_images(query, num_images=100):
@@ -169,35 +160,6 @@ def download_images(query, num_images=100):
 
     threading.Thread(target=task).start()
 
-# 🔹 Ajouter l'image mal reconnue dans la bonne classe et réentraîner le modèle (correction avec threading)
-def correct_recognition():
-    def ask_correct_label():
-        correct_label = simpledialog.askstring("Correction", "Quel est le bon objet ?")
-        if correct_label:
-            translated_label = translate_to_english(correct_label)
-            threading.Thread(target=process_correction, args=(translated_label,)).start()
-
-    def process_correction(correct_label):
-        global last_image_path
-
-        save_dir = os.path.join(DATASET_DIR, correct_label)
-        os.makedirs(save_dir, exist_ok=True)
-
-        # Copier l'image mal reconnue dans la bonne catégorie
-        image_name = os.path.basename(last_image_path)
-        new_image_path = os.path.join(save_dir, image_name)
-        shutil.copy(last_image_path, new_image_path)  
-
-        update_progress(f"L'image a été copiée dans '{correct_label}'. Téléchargement de nouvelles images...")
-
-        # Télécharger plus d'images de cette catégorie en évitant les doublons
-        download_images(correct_label, num_images=100)
-
-        # Réentraîner le modèle après correction
-        train_image_model()
-
-    # Lancer la demande du label sur le thread principal
-    root.after(0, ask_correct_label)
 
 # 🔹 Entraînement du modèle avec affichage du progrès (multithreaded)
 def train_image_model():
@@ -247,10 +209,12 @@ def train_image_model():
 
     threading.Thread(target=task).start()
 
+
 # 🔹 Mise à jour de l'interface pour le progrès
 def update_progress(message):
     progress_label.config(text=message)
     root.update_idletasks()
+
 
 # 🔹 Chargement et affichage de l’image sélectionnée
 def load_and_display_image():
@@ -266,19 +230,14 @@ def load_and_display_image():
     image_label.config(image=img)
     image_label.image = img  
 
-# 🔹 Affichage des statistiques avec scan dynamique des dossiers
-def show_statistics():
-    # Liste les dossiers existants dans le dataset pour éviter les erreurs
-    existing_classes = [
-        d for d in os.listdir(DATASET_DIR) if os.path.isdir(os.path.join(DATASET_DIR, d))
-    ]
 
-    # Mettre à jour class_names pour refléter les dossiers existants
+# 🔹 Affichage des statistiques et gestion des classes
+def show_statistics():
+    existing_classes = [d for d in os.listdir(DATASET_DIR) if os.path.isdir(os.path.join(DATASET_DIR, d))]
     global class_names
     class_names = existing_classes
     save_class_names()
 
-    # Compter le nombre d'images dans chaque dossier
     class_counts = {
         cls: len(os.listdir(os.path.join(DATASET_DIR, cls)))
         for cls in class_names
@@ -286,14 +245,33 @@ def show_statistics():
 
     stats_window = tk.Toplevel(root)
     stats_window.title("Gestion des classes")
-    stats_window.geometry("500x500")
+    stats_window.geometry("600x600")
 
     tk.Label(stats_window, text="Liste des classes :", font=("Arial", 14, "bold")).pack(pady=10)
 
-    listbox = tk.Listbox(stats_window, width=50, height=15)
+    listbox_frame = tk.Frame(stats_window)
+    listbox_frame.pack(expand=True, fill="both", padx=10, pady=10)
+
+    scrollbar = tk.Scrollbar(listbox_frame)
+    scrollbar.pack(side="right", fill="y")
+
+    listbox = tk.Listbox(listbox_frame, width=50, height=20, yscrollcommand=scrollbar.set)
     for cls, count in class_counts.items():
         listbox.insert(tk.END, f"{cls} ({count} images)")
-    listbox.pack(pady=10)
+    listbox.pack(expand=True, fill="both")
+
+    scrollbar.config(command=listbox.yview)
+
+    # 🔹 Fonction pour afficher le graphe des classes
+    def show_class_graph():
+        plt.figure(figsize=(10, 6))
+        plt.bar(class_counts.keys(), class_counts.values(), color='skyblue')
+        plt.xlabel("Classes")
+        plt.ylabel("Nombre d'images")
+        plt.title("Répartition des images par classe")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.show()
 
     # 🔹 Fonction pour renommer une classe
     def rename_class():
@@ -316,8 +294,7 @@ def show_statistics():
 
             os.rename(old_path, new_path)
             messagebox.showinfo("Succès", f"Classe '{old_class}' renommée en '{new_class}'.")
-
-            show_statistics()  # Rafraîchir l'affichage après le renommage
+            show_statistics()
 
     # 🔹 Fonction pour fusionner deux classes
     def merge_classes():
@@ -337,15 +314,13 @@ def show_statistics():
             if not os.path.exists(target_path):
                 os.makedirs(target_path)
 
-            # Déplacer les fichiers de la classe source vers la classe cible
             for filename in os.listdir(source_path):
                 shutil.move(os.path.join(source_path, filename), os.path.join(target_path, filename))
 
-            # Supprimer le dossier source après la fusion
             os.rmdir(source_path)
             messagebox.showinfo("Succès", f"Contenu de '{source_class}' fusionné dans '{target_class}'.")
+            show_statistics()
 
-            show_statistics()  # Rafraîchir l'affichage après la fusion
     # 🔹 Fonction pour supprimer une classe
     def delete_class():
         selection = listbox.curselection()
@@ -354,22 +329,21 @@ def show_statistics():
             return
 
         class_to_delete = list(class_counts.keys())[selection[0]]
-        confirm = messagebox.askyesno("Confirmation", f"Êtes-vous sûr de vouloir supprimer la classe '{class_to_delete}' ?\nToutes les images seront définitivement perdues.")
+        confirm = messagebox.askyesno("Confirmation", f"Êtes-vous sûr de vouloir supprimer la classe '{class_to_delete}' ? Toutes les images seront définitivement perdues.")
 
         if confirm:
             class_path = os.path.join(DATASET_DIR, class_to_delete)
-
-            # Supprimer le dossier et son contenu
             shutil.rmtree(class_path)
             messagebox.showinfo("Succès", f"La classe '{class_to_delete}' a été supprimée avec succès.")
+            show_statistics()
 
-            show_statistics()  # Rafraîchir l'affichage après suppression
-
-    # Boutons pour renommer et fusionner les classes
+    # Boutons pour gérer les classes
     ttk.Button(stats_window, text="Renommer la classe", command=rename_class).pack(pady=5)
     ttk.Button(stats_window, text="Fusionner la classe", command=merge_classes).pack(pady=5)
     ttk.Button(stats_window, text="🗑️ Supprimer la classe", command=delete_class).pack(pady=5)
+    ttk.Button(stats_window, text="📊 Voir le graphe des classes", command=show_class_graph).pack(pady=5)
     ttk.Button(stats_window, text="Fermer", command=stats_window.destroy).pack(pady=10)
+
 
 # 🔹 Classification d'image avec affichage des probabilités
 def classify_image():
@@ -403,7 +377,8 @@ def classify_image():
     except Exception as e:
         messagebox.showerror("Erreur", f"Problème de reconnaissance : {e}")
 
-# Interface
+
+# Interface principale
 frame = ttk.Frame(root, padding=20)
 frame.pack(expand=True, fill="both")
 
@@ -413,9 +388,13 @@ image_label.pack(pady=10)
 progress_label = tk.Label(frame, text="")
 progress_label.pack(pady=5)
 
+# 🔹 Boutons pour les fonctionnalités principales
 ttk.Button(frame, text="📂 Sélectionner une image", command=load_and_display_image).pack(pady=5)
 ttk.Button(frame, text="📸 Reconnaître l'image", command=classify_image).pack(pady=5)
-ttk.Button(frame, text="📊 Afficher les statistiques", command=show_statistics).pack(pady=5)
+ttk.Button(frame, text="📊 Gérer les classes", command=show_statistics).pack(pady=5)
 
+# Chargement des noms de classes existants au démarrage
 load_class_names()
+
+# 🔹 Lancement de l'application
 root.mainloop()
